@@ -3,7 +3,7 @@ import {Dragging, Events, Html} from "@opendaw/lib-dom"
 import {clamp, DefaultObservableValue, int, Lifecycle, Option, Terminable, UUID} from "@opendaw/lib-std"
 import {createElement} from "@opendaw/lib-jsx"
 import {StudioService} from "@/service/StudioService"
-import {AudioFileBoxAdapter, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
+import {PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
 import {AudioFileBox, PlayfieldSampleBox} from "@opendaw/studio-boxes"
 import {CanvasPainter} from "@opendaw/studio-core"
 import {PeaksPainter} from "@opendaw/lib-fusion"
@@ -12,6 +12,8 @@ import {SampleSelector} from "@/ui/devices/SampleSelector"
 const className = Html.adoptStyleSheet(css, "ChopEditor")
 
 const HIT_PX = 8
+
+type LoadedSample = {uuid: UUID.Bytes, name: string, endInSeconds: number}
 
 type Construct = {
     lifecycle: Lifecycle
@@ -22,8 +24,8 @@ type Construct = {
 
 export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => {
     const {project} = service
-    const {editing, boxAdapters} = project
-    const currentFile = new DefaultObservableValue<Option<AudioFileBox>>(Option.None)
+    const {editing} = project
+    const currentSample = new DefaultObservableValue<Option<LoadedSample>>(Option.None)
     const trimStart = new DefaultObservableValue(0.0)
     const trimEnd = new DefaultObservableValue(1.0)
     const markers = new DefaultObservableValue<ReadonlyArray<number>>([])
@@ -31,63 +33,67 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
     const fileLabel: HTMLElement = <div className="file-label">Drop sample here or click Browse</div>
     const applyButton: HTMLButtonElement = <button className="apply-btn" disabled>Apply to Pads</button>
     const browseButton: HTMLButtonElement = <button className="browse-btn">Browse…</button>
-    const getFileAdapter = (): Option<AudioFileBoxAdapter> =>
-        currentFile.getValue().map(box => boxAdapters.adapterFor(box, AudioFileBoxAdapter))
     const paintWaveform = ({context, width, height}: CanvasPainter): void => {
         context.clearRect(0, 0, width, height)
-        getFileAdapter().ifSome(fileAdapter => fileAdapter.getOrCreateLoader().peaks.ifSome(peaks => {
-            const {numFrames, numChannels} = peaks
-            const wd = width * devicePixelRatio
-            const hd = height * devicePixelRatio
-            const s0 = trimStart.getValue()
-            const s1 = trimEnd.getValue()
-            const x0 = s0 * wd
-            const x1 = s1 * wd
-            const u0 = s0 * numFrames
-            const u1 = s1 * numFrames
-            const rowHeight = hd / numChannels
-            context.fillStyle = "hsl(220, 80%, 70%)"
-            for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
-                peaksLayout.u0 = u0; peaksLayout.u1 = u1
-                peaksLayout.x0 = x0; peaksLayout.x1 = x1
-                peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
-                PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
-            }
-            if (u0 > 0) {
-                context.globalAlpha = 0.25
+        currentSample.getValue().ifSome(({uuid}) => {
+            service.sampleManager.getOrCreate(uuid).peaks.ifSome(peaks => {
+                const {numFrames, numChannels} = peaks
+                const wd = width * devicePixelRatio
+                const hd = height * devicePixelRatio
+                const s0 = trimStart.getValue()
+                const s1 = trimEnd.getValue()
+                const x0 = s0 * wd
+                const x1 = s1 * wd
+                const u0 = s0 * numFrames
+                const u1 = s1 * numFrames
+                const rowHeight = hd / numChannels
+                context.fillStyle = "hsl(220, 80%, 70%)"
                 for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
-                    peaksLayout.u0 = 0; peaksLayout.u1 = u0
-                    peaksLayout.x0 = 0; peaksLayout.x1 = x0
+                    peaksLayout.u0 = u0; peaksLayout.u1 = u1
+                    peaksLayout.x0 = x0; peaksLayout.x1 = x1
                     peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
                     PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
                 }
-                context.globalAlpha = 1.0
-            }
-            if (u1 < numFrames) {
-                context.globalAlpha = 0.25
-                for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
-                    peaksLayout.u0 = u1; peaksLayout.u1 = numFrames
-                    peaksLayout.x0 = x1; peaksLayout.x1 = wd
-                    peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
-                    PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
+                if (u0 > 0) {
+                    context.globalAlpha = 0.25
+                    for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
+                        peaksLayout.u0 = 0; peaksLayout.u1 = u0
+                        peaksLayout.x0 = 0; peaksLayout.x1 = x0
+                        peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
+                        PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
+                    }
+                    context.globalAlpha = 1.0
                 }
-                context.globalAlpha = 1.0
-            }
-            context.fillStyle = "rgba(255,255,255,0.9)"
-            context.fillRect(Math.round(x0), 0, 2, hd)
-            context.fillRect(Math.round(x1) - 1, 0, 2, hd)
-            context.fillStyle = "#ffcc00"
-            for (const markerPos of markers.getValue()) {
-                context.fillRect(Math.round(markerPos * wd), 0, 1, hd)
-            }
-        }))
+                if (u1 < numFrames) {
+                    context.globalAlpha = 0.25
+                    for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
+                        peaksLayout.u0 = u1; peaksLayout.u1 = numFrames
+                        peaksLayout.x0 = x1; peaksLayout.x1 = wd
+                        peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
+                        PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
+                    }
+                    context.globalAlpha = 1.0
+                }
+                context.fillStyle = "rgba(255,255,255,0.9)"
+                context.fillRect(Math.round(x0), 0, 2, hd)
+                context.fillRect(Math.round(x1) - 1, 0, 2, hd)
+                context.fillStyle = "#ffcc00"
+                for (const markerPos of markers.getValue()) {
+                    context.fillRect(Math.round(markerPos * wd), 0, 1, hd)
+                }
+            })
+        })
     }
     const waveformPainter = new CanvasPainter(canvas, paintWaveform)
     const sampleSelector = new SampleSelector(service, {
         isAttached: (): boolean => adapter.box.isAttached(),
-        hasSample: (): boolean => currentFile.getValue().nonEmpty(),
+        hasSample: (): boolean => currentSample.getValue().nonEmpty(),
         replace: (replacement: Option<AudioFileBox>): void => {
-            currentFile.setValue(replacement)
+            currentSample.setValue(replacement.map(box => ({
+                uuid: box.address.uuid,
+                name: box.fileName.getValue(),
+                endInSeconds: box.endInSeconds.getValue()
+            })))
             trimStart.setValue(0.0)
             trimEnd.setValue(1.0)
             markers.setValue([])
@@ -160,12 +166,17 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
         }
     }
     const applyToPads = (): void => {
-        currentFile.getValue().ifSome(audioFileBox => {
+        currentSample.getValue().ifSome(({uuid, name, endInSeconds}) => {
             const s0 = trimStart.getValue()
             const s1 = trimEnd.getValue()
             const sorted = [...markers.getValue()].sort((posA, posB) => posA - posB).filter(pos => pos > s0 && pos < s1)
             const boundaries = [s0, ...sorted, s1]
             editing.modify(() => {
+                const audioFileBox = project.boxGraph.findBox<AudioFileBox>(uuid)
+                    .unwrapOrElse(() => AudioFileBox.create(project.boxGraph, uuid, box => {
+                        box.fileName.setValue(name)
+                        box.endInSeconds.setValue(endInSeconds)
+                    }))
                 for (let sliceIndex = 0; sliceIndex < boundaries.length - 1; sliceIndex++) {
                     const padIndex = octave.getValue() * 12 + sliceIndex
                     if (padIndex > 127) {break}
@@ -195,18 +206,19 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
         waveformPainter,
         sampleSelector.configureDrop(canvas),
         sampleSelector.configureBrowseClick(browseButton),
-        currentFile.catchupAndSubscribe(owner => {
+        currentSample.catchupAndSubscribe(owner => {
             loaderSubscription.terminate()
-            const file = owner.getValue()
-            const hasFile = file.nonEmpty()
-            applyButton.disabled = !hasFile
-            file.ifSome(box => {fileLabel.textContent = box.fileName.getValue()})
-            if (!hasFile) {fileLabel.textContent = "Drop sample here or click Browse"}
-            getFileAdapter().ifSome(fileAdapter => {
-                loaderSubscription = fileAdapter.getOrCreateLoader().subscribe(state => {
+            const sample = owner.getValue()
+            applyButton.disabled = sample.isEmpty()
+            sample.ifSome(({uuid, name}) => {
+                fileLabel.textContent = name
+                const loader = service.sampleManager.getOrCreate(uuid)
+                loaderSubscription = loader.subscribe(state => {
                     if (state.type === "loaded") {waveformPainter.requestUpdate()}
                 })
+                if (loader.peaks.nonEmpty()) {waveformPainter.requestUpdate()}
             })
+            if (sample.isEmpty()) {fileLabel.textContent = "Drop sample here or click Browse"}
         }),
         trimStart.subscribe(waveformPainter.requestUpdate),
         trimEnd.subscribe(waveformPainter.requestUpdate),
