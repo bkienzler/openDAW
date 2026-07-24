@@ -49,7 +49,8 @@ export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}:
                         currentSample={currentSample}
                         trimStart={chopTrimStart}
                         trimEnd={chopTrimEnd}
-                        markers={chopMarkers}/>
+                        markers={chopMarkers}
+                        onClose={() => chopMode.setValue(false)}/>
                 </div>
                 backdrop.appendChild(panel)
                 document.body.appendChild(backdrop)

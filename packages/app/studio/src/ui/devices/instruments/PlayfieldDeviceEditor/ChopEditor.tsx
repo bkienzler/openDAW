@@ -26,21 +26,24 @@ type Construct = {
     trimStart: DefaultObservableValue<number>
     trimEnd: DefaultObservableValue<number>
     markers: DefaultObservableValue<ReadonlyArray<number>>
+    onClose: () => void
 }
 
-export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, trimStart, trimEnd, markers}: Construct) => {
+export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, trimStart, trimEnd, markers, onClose}: Construct) => {
     const {project} = service
     const {editing} = project
     const viewStart = new DefaultObservableValue(0.0)
     const viewEnd = new DefaultObservableValue(1.0)
     const liveMode = new DefaultObservableValue(false)
     const playheadPos = new DefaultObservableValue(-1.0)
-    const liveModeTerminator = new Terminator()
+    const streamTerminator = new Terminator()
+    const chopTerminator = new Terminator()
     const canvas: HTMLCanvasElement = <canvas/>
     const fileLabel: HTMLElement = <div className="file-label">Drop sample here or click Browse</div>
     const applyButton: HTMLButtonElement = <button className="apply-btn" disabled>Apply to Pads</button>
     const browseButton: HTMLButtonElement = <button className="browse-btn">Browse…</button>
     const liveButton: HTMLButtonElement = <button className="live-btn">Live</button>
+    const closeButton: HTMLButtonElement = <button className="close-btn">✕</button>
     const toSamplePos = (canvasX: number): number => {
         const {left, width} = canvas.getBoundingClientRect()
         return viewStart.getValue() + clamp((canvasX - left) / width, 0.0, 1.0) * (viewEnd.getValue() - viewStart.getValue())
@@ -191,6 +194,27 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             approve: (): void => {}
         }
     }
+    const subscribeToSampleStream = (uuid: UUID.Bytes): void => {
+        streamTerminator.terminate()
+        playheadPos.setValue(-1.0)
+        for (const sampleAdapter of adapter.samples.adapters()) {
+            sampleAdapter.file().ifSome(file => {
+                if (!UUID.equals(file.box.address.uuid, uuid)) {return}
+                let numFrames = 0
+                file.data.ifSome(data => {numFrames = data.numberOfFrames})
+                streamTerminator.own(
+                    service.project.liveStreamReceiver.subscribeFloats(sampleAdapter.address, array => {
+                        if (numFrames <= 0) {file.data.ifSome(data => {numFrames = data.numberOfFrames})}
+                        if (array.length === 0 || array[0] === -1) {
+                            playheadPos.setValue(-1.0)
+                            return
+                        }
+                        playheadPos.setValue(array[0] / numFrames)
+                    })
+                )
+            })
+        }
+    }
     const applyToPads = (): void => {
         currentSample.getValue().ifSome(({uuid, name, endInSeconds}) => {
             const s0 = trimStart.getValue()
@@ -225,6 +249,9 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                     }
                 }
             })
+            subscribeToSampleStream(uuid)
+            applyButton.textContent = "Applied!"
+            setTimeout(() => {applyButton.textContent = "Apply to Pads"}, 2000)
         })
     }
     let loaderSubscription: Terminable = Terminable.Empty
@@ -243,8 +270,12 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                     if (state.type === "loaded") {waveformPainter.requestUpdate()}
                 })
                 if (loader.peaks.nonEmpty()) {requestAnimationFrame(() => waveformPainter.requestUpdate())}
+                subscribeToSampleStream(uuid)
             })
-            if (sample.isEmpty()) {fileLabel.textContent = "Drop sample here or click Browse"}
+            if (sample.isEmpty()) {
+                fileLabel.textContent = "Drop sample here or click Browse"
+                streamTerminator.terminate()
+            }
         }),
         trimStart.subscribe(waveformPainter.requestUpdate),
         trimEnd.subscribe(waveformPainter.requestUpdate),
@@ -254,38 +285,23 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         playheadPos.subscribe(waveformPainter.requestUpdate),
         Events.subscribe(applyButton, "click", applyToPads),
         Events.subscribe(liveButton, "click", () => liveMode.setValue(!liveMode.getValue())),
+        Events.subscribe(closeButton, "click", onClose),
         liveMode.catchupAndSubscribe(owner => {
             const isLive = owner.getValue()
             liveButton.classList.toggle("active", isLive)
-            liveModeTerminator.terminate()
-            playheadPos.setValue(-1.0)
+            chopTerminator.terminate()
             if (!isLive) {return}
             currentSample.getValue().ifSome(({uuid}) => {
-                for (const sampleAdapter of adapter.samples.adapters()) {
-                    sampleAdapter.file().ifSome(file => {
-                        if (!UUID.equals(file.box.address.uuid, uuid)) {return}
-                        let numFrames = 0
-                        file.data.ifSome(data => {numFrames = data.numberOfFrames})
-                        liveModeTerminator.own(
-                            service.project.liveStreamReceiver.subscribeFloats(sampleAdapter.address, array => {
-                                if (numFrames <= 0) {file.data.ifSome(data => {numFrames = data.numberOfFrames})}
-                                if (array.length === 0 || array[0] === -1) {
-                                    playheadPos.setValue(-1.0)
-                                    return
-                                }
-                                playheadPos.setValue(array[0] / numFrames)
-                            })
-                        )
-                    })
-                }
-                liveModeTerminator.own(
+                subscribeToSampleStream(uuid)
+                chopTerminator.own(
                     Events.subscribe(window, "keydown", (event: KeyboardEvent) => {
                         if (event.repeat || event.code !== "Space") {return}
                         event.preventDefault()
+                        event.stopPropagation()
                         const ph = playheadPos.getValue()
                         if (ph < 0) {return}
                         markers.setValue([...markers.getValue(), ph])
-                    })
+                    }, {capture: true})
                 )
             })
         }),
@@ -335,7 +351,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 }
             })
         }),
-        {terminate: (): void => {loaderSubscription.terminate(); liveModeTerminator.terminate()}}
+        {terminate: (): void => {loaderSubscription.terminate(); streamTerminator.terminate(); chopTerminator.terminate()}}
     )
     return (
         <div className={className}>
@@ -347,6 +363,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 {browseButton}
                 {liveButton}
                 {applyButton}
+                {closeButton}
             </div>
         </div>
     )
