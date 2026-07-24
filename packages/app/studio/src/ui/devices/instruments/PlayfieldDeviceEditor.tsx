@@ -1,5 +1,5 @@
 import css from "./PlayfieldDeviceEditor.sass?inline"
-import {DefaultObservableValue, Lifecycle, Terminator} from "@opendaw/lib-std"
+import {DefaultObservableValue, Lifecycle, Option, Terminator} from "@opendaw/lib-std"
 import {createElement, replaceChildren} from "@opendaw/lib-jsx"
 import {Events, Html} from "@opendaw/lib-dom"
 import {DeviceEditor} from "@/ui/devices/DeviceEditor.tsx"
@@ -8,7 +8,7 @@ import {DevicePeakMeter} from "@/ui/devices/panel/DevicePeakMeter.tsx"
 import {DeviceHost, InstrumentFactories, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
 import {MenuItem} from "@opendaw/studio-core"
 import {SlotGrid} from "@/ui/devices/instruments/PlayfieldDeviceEditor/SlotGrid"
-import {ChopEditor} from "@/ui/devices/instruments/PlayfieldDeviceEditor/ChopEditor"
+import {ChopEditor, LoadedSample} from "@/ui/devices/instruments/PlayfieldDeviceEditor/ChopEditor"
 import {StudioService} from "@/service/StudioService"
 
 type Construct = {
@@ -19,11 +19,15 @@ type Construct = {
 }
 
 const controlsWrapperClass = Html.adoptStyleSheet(css, "PlayfieldDeviceEditor")
-const octave = new DefaultObservableValue(5) // TODO Make that bound to its PlayfieldDeviceBoxAdapter
-const chopMode = new DefaultObservableValue(false) // TODO Make that bound to its PlayfieldDeviceBoxAdapter
 
 export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}: Construct) => {
     const {project} = service
+    const octave = new DefaultObservableValue(5) // TODO bind to PlayfieldDeviceBoxAdapter
+    const chopMode = new DefaultObservableValue(false)
+    const currentSample = new DefaultObservableValue<Option<LoadedSample>>(Option.None)
+    const chopTrimStart = new DefaultObservableValue(0.0)
+    const chopTrimEnd = new DefaultObservableValue(1.0)
+    const chopMarkers = new DefaultObservableValue<ReadonlyArray<number>>([])
     const viewLifecycle = lifecycle.own(new Terminator())
     const controlsView: HTMLElement = <div/>
     const chopToggle: HTMLButtonElement = <button className="chop-toggle"/>
@@ -33,9 +37,32 @@ export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}:
             viewLifecycle.terminate()
             chopToggle.textContent = isChop ? "Pads" : "Chop"
             chopToggle.classList.toggle("active", isChop)
-            replaceChildren(controlsView, isChop
-                ? <ChopEditor lifecycle={viewLifecycle} service={service} adapter={adapter} octave={octave}/>
-                : <SlotGrid lifecycle={viewLifecycle} service={service} adapter={adapter} octave={octave}/>)
+            if (isChop) {
+                replaceChildren(controlsView)
+                const backdrop: HTMLElement = <div className="chop-backdrop"/>
+                const panel: HTMLElement = <div className="chop-panel">
+                    <ChopEditor
+                        lifecycle={viewLifecycle}
+                        service={service}
+                        adapter={adapter}
+                        octave={octave}
+                        currentSample={currentSample}
+                        trimStart={chopTrimStart}
+                        trimEnd={chopTrimEnd}
+                        markers={chopMarkers}/>
+                </div>
+                backdrop.appendChild(panel)
+                document.body.appendChild(backdrop)
+                viewLifecycle.ownAll(
+                    Events.subscribe(backdrop, "pointerdown", (event: PointerEvent) => {
+                        if (event.target === backdrop) {chopMode.setValue(false)}
+                    }),
+                    {terminate: () => backdrop.remove()}
+                )
+            } else {
+                replaceChildren(controlsView,
+                    <SlotGrid lifecycle={viewLifecycle} service={service} adapter={adapter} octave={octave}/>)
+            }
         }),
         Events.subscribe(chopToggle, "click", () => chopMode.setValue(!chopMode.getValue()))
     )

@@ -12,27 +12,37 @@ import {SampleSelector} from "@/ui/devices/SampleSelector"
 const className = Html.adoptStyleSheet(css, "ChopEditor")
 
 const HIT_PX = 8
+const MIN_VIEW_RANGE = 0.001
+const ZOOM_FACTOR = 0.8
 
-type LoadedSample = {uuid: UUID.Bytes, name: string, endInSeconds: number}
+export type LoadedSample = {uuid: UUID.Bytes, name: string, endInSeconds: number}
 
 type Construct = {
     lifecycle: Lifecycle
     service: StudioService
     adapter: PlayfieldDeviceBoxAdapter
     octave: DefaultObservableValue<int>
+    currentSample: DefaultObservableValue<Option<LoadedSample>>
+    trimStart: DefaultObservableValue<number>
+    trimEnd: DefaultObservableValue<number>
+    markers: DefaultObservableValue<ReadonlyArray<number>>
 }
 
-export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => {
+export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, trimStart, trimEnd, markers}: Construct) => {
     const {project} = service
     const {editing} = project
-    const currentSample = new DefaultObservableValue<Option<LoadedSample>>(Option.None)
-    const trimStart = new DefaultObservableValue(0.0)
-    const trimEnd = new DefaultObservableValue(1.0)
-    const markers = new DefaultObservableValue<ReadonlyArray<number>>([])
+    const viewStart = new DefaultObservableValue(0.0)
+    const viewEnd = new DefaultObservableValue(1.0)
     const canvas: HTMLCanvasElement = <canvas/>
     const fileLabel: HTMLElement = <div className="file-label">Drop sample here or click Browse</div>
     const applyButton: HTMLButtonElement = <button className="apply-btn" disabled>Apply to Pads</button>
     const browseButton: HTMLButtonElement = <button className="browse-btn">Browse…</button>
+    const toSamplePos = (canvasX: number): number => {
+        const {left, width} = canvas.getBoundingClientRect()
+        return viewStart.getValue() + clamp((canvasX - left) / width, 0.0, 1.0) * (viewEnd.getValue() - viewStart.getValue())
+    }
+    const toCanvasX = (samplePos: number, width: number): number =>
+        (samplePos - viewStart.getValue()) / (viewEnd.getValue() - viewStart.getValue()) * width
     const paintWaveform = ({context, width, height}: CanvasPainter): void => {
         context.clearRect(0, 0, width, height)
         currentSample.getValue().ifSome(({uuid}) => {
@@ -42,44 +52,44 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
                 const hd = height * devicePixelRatio
                 const s0 = trimStart.getValue()
                 const s1 = trimEnd.getValue()
-                const x0 = s0 * wd
-                const x1 = s1 * wd
-                const u0 = s0 * numFrames
-                const u1 = s1 * numFrames
-                const rowHeight = hd / numChannels
-                context.fillStyle = "hsl(220, 80%, 70%)"
-                for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
-                    peaksLayout.u0 = u0; peaksLayout.u1 = u1
-                    peaksLayout.x0 = x0; peaksLayout.x1 = x1
-                    peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
-                    PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
-                }
-                if (u0 > 0) {
-                    context.globalAlpha = 0.25
-                    for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
-                        peaksLayout.u0 = 0; peaksLayout.u1 = u0
-                        peaksLayout.x0 = 0; peaksLayout.x1 = x0
-                        peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
-                        PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
+                const vs = viewStart.getValue()
+                const ve = viewEnd.getValue()
+                const viewRange = ve - vs
+                const toPx = (p: number): number => (p - vs) / viewRange * wd
+                const toFrame = (p: number): number => p * numFrames
+                const drawRange = (a: number, b: number): void => {
+                    const ca = Math.max(a, vs)
+                    const cb = Math.min(b, ve)
+                    if (ca >= cb) {return}
+                    const rowHeight = hd / numChannels
+                    for (let ch = 0; ch < numChannels; ch++) {
+                        peaksLayout.u0 = toFrame(ca); peaksLayout.u1 = toFrame(cb)
+                        peaksLayout.x0 = toPx(ca); peaksLayout.x1 = toPx(cb)
+                        peaksLayout.y0 = rowHeight * ch; peaksLayout.y1 = rowHeight * (ch + 1)
+                        PeaksPainter.renderPixelStrips(context, peaks, ch, peaksLayout)
                     }
+                }
+                context.fillStyle = "hsl(220, 80%, 70%)"
+                drawRange(s0, s1)
+                if (s0 > 0) {
+                    context.globalAlpha = 0.25
+                    drawRange(0, s0)
                     context.globalAlpha = 1.0
                 }
-                if (u1 < numFrames) {
+                if (s1 < 1) {
                     context.globalAlpha = 0.25
-                    for (let channelIndex = 0; channelIndex < numChannels; channelIndex++) {
-                        peaksLayout.u0 = u1; peaksLayout.u1 = numFrames
-                        peaksLayout.x0 = x1; peaksLayout.x1 = wd
-                        peaksLayout.y0 = rowHeight * channelIndex; peaksLayout.y1 = rowHeight * (channelIndex + 1)
-                        PeaksPainter.renderPixelStrips(context, peaks, channelIndex, peaksLayout)
-                    }
+                    drawRange(s1, 1)
                     context.globalAlpha = 1.0
                 }
                 context.fillStyle = "rgba(255,255,255,0.9)"
-                context.fillRect(Math.round(x0), 0, 2, hd)
-                context.fillRect(Math.round(x1) - 1, 0, 2, hd)
+                const x0 = toPx(s0)
+                const x1 = toPx(s1)
+                if (x0 >= 0 && x0 <= wd) {context.fillRect(Math.round(x0), 0, 2, hd)}
+                if (x1 >= 0 && x1 <= wd) {context.fillRect(Math.round(x1) - 1, 0, 2, hd)}
                 context.fillStyle = "#ffcc00"
                 for (const markerPos of markers.getValue()) {
-                    context.fillRect(Math.round(markerPos * wd), 0, 1, hd)
+                    const mx = toPx(markerPos)
+                    if (mx >= 0 && mx <= wd) {context.fillRect(Math.round(mx), 0, 1, hd)}
                 }
             })
         })
@@ -97,12 +107,16 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
             trimStart.setValue(0.0)
             trimEnd.setValue(1.0)
             markers.setValue([])
+            viewStart.setValue(0.0)
+            viewEnd.setValue(1.0)
         }
     })
     const nearestTrimHandle = (clientX: number): Option<{dir: "start" | "end", offset: number}> => {
         const {left, width} = canvas.getBoundingClientRect()
-        const dl = clientX - (left + trimStart.getValue() * width)
-        const dr = clientX - (left + trimEnd.getValue() * width)
+        const s0px = toCanvasX(trimStart.getValue(), width) + left
+        const s1px = toCanvasX(trimEnd.getValue(), width) + left
+        const dl = clientX - s0px
+        const dr = clientX - s1px
         const distL = Math.abs(dl)
         const distR = Math.abs(dr)
         if (distL <= HIT_PX && distL <= distR) {return Option.wrap({dir: "start", offset: dl})}
@@ -110,15 +124,16 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
         return Option.None
     }
     const nearestMarkerIndex = (clientX: number): number => {
-        const {left, width} = canvas.getBoundingClientRect()
+        const {width} = canvas.getBoundingClientRect()
+        const viewRange = viewEnd.getValue() - viewStart.getValue()
         const threshold = HIT_PX / width
-        const pos = (clientX - left) / width
+        const pos = toSamplePos(clientX)
         const currentMarkers = markers.getValue()
         let bestIndex = -1
-        let bestDist = threshold
-        for (let markerIndex = 0; markerIndex < currentMarkers.length; markerIndex++) {
-            const dist = Math.abs(currentMarkers[markerIndex] - pos)
-            if (dist < bestDist) {bestDist = dist; bestIndex = markerIndex}
+        let bestDist = threshold * viewRange
+        for (let i = 0; i < currentMarkers.length; i++) {
+            const dist = Math.abs(currentMarkers[i] - pos)
+            if (dist < bestDist) {bestDist = dist; bestIndex = i}
         }
         return bestIndex
     }
@@ -126,16 +141,16 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
         update: (dragEvent: Dragging.Event): void => {
             const {left, width} = canvas.getBoundingClientRect()
             const ratio = clamp((dragEvent.clientX - offset - left) / width, 0.0, 1.0)
-            if (dir === "start") {trimStart.setValue(Math.min(ratio, trimEnd.getValue()))}
-            else {trimEnd.setValue(Math.max(ratio, trimStart.getValue()))}
+            const samplePos = viewStart.getValue() + ratio * (viewEnd.getValue() - viewStart.getValue())
+            if (dir === "start") {trimStart.setValue(Math.min(samplePos, trimEnd.getValue()))}
+            else {trimEnd.setValue(Math.max(samplePos, trimStart.getValue()))}
         },
         cancel: (): void => {},
         approve: (): void => {}
     })
     const makeMarkerDrag = (markerIdx: int): Dragging.Process => ({
         update: (dragEvent: Dragging.Event): void => {
-            const {left, width} = canvas.getBoundingClientRect()
-            const pos = clamp((dragEvent.clientX - left) / width, 0.0, 1.0)
+            const pos = clamp(toSamplePos(dragEvent.clientX), 0.0, 1.0)
             const arr = [...markers.getValue()]
             arr[markerIdx] = pos
             markers.setValue(arr)
@@ -144,15 +159,13 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
         approve: (): void => {}
     })
     const makeNewMarkerDrag = (clickX: number): Dragging.Process => {
-        const {left, width} = canvas.getBoundingClientRect()
-        const newPos = clamp((clickX - left) / width, 0.0, 1.0)
+        const newPos = clamp(toSamplePos(clickX), 0.0, 1.0)
         const withNew = [...markers.getValue(), newPos]
         const newIdx = withNew.length - 1
         markers.setValue(withNew)
         return {
             update: (dragEvent: Dragging.Event): void => {
-                const {left: dragLeft, width: dragWidth} = canvas.getBoundingClientRect()
-                const pos = clamp((dragEvent.clientX - dragLeft) / dragWidth, 0.0, 1.0)
+                const pos = clamp(toSamplePos(dragEvent.clientX), 0.0, 1.0)
                 const arr = [...markers.getValue()]
                 arr[newIdx] = pos
                 markers.setValue(arr)
@@ -223,7 +236,36 @@ export const ChopEditor = ({lifecycle, service, adapter, octave}: Construct) => 
         trimStart.subscribe(waveformPainter.requestUpdate),
         trimEnd.subscribe(waveformPainter.requestUpdate),
         markers.subscribe(waveformPainter.requestUpdate),
+        viewStart.subscribe(waveformPainter.requestUpdate),
+        viewEnd.subscribe(waveformPainter.requestUpdate),
         Events.subscribe(applyButton, "click", applyToPads),
+        Events.subscribe(canvas, "wheel", (event: WheelEvent) => {
+            event.preventDefault()
+            const {left, width} = canvas.getBoundingClientRect()
+            const vs = viewStart.getValue()
+            const ve = viewEnd.getValue()
+            const viewRange = ve - vs
+            if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+                const delta = (event.deltaX !== 0 ? event.deltaX : event.deltaY) / width * viewRange
+                const newStart = clamp(vs + delta, 0.0, 1.0 - viewRange)
+                viewStart.setValue(newStart)
+                viewEnd.setValue(newStart + viewRange)
+            } else {
+                const factor = event.deltaY > 0 ? 1 / ZOOM_FACTOR : ZOOM_FACTOR
+                const pivot = vs + clamp((event.clientX - left) / width, 0.0, 1.0) * viewRange
+                let newStart = pivot - (pivot - vs) * factor
+                let newEnd = pivot + (ve - pivot) * factor
+                if (newEnd - newStart < MIN_VIEW_RANGE) {return}
+                newStart = Math.max(0, newStart)
+                newEnd = Math.min(1, newEnd)
+                viewStart.setValue(newStart)
+                viewEnd.setValue(newEnd)
+            }
+        }, {passive: false}),
+        Events.subscribe(canvas, "dblclick", () => {
+            viewStart.setValue(0.0)
+            viewEnd.setValue(1.0)
+        }),
         Events.subscribe(canvas, "contextmenu", (event: MouseEvent) => {
             event.preventDefault()
             const markerIdx = nearestMarkerIndex(event.clientX)

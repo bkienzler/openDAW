@@ -1,5 +1,19 @@
 @use "@/colors"
 
+div.chop-backdrop
+  position: fixed
+  inset: 0
+  z-index: 1000
+  display: flex
+  align-items: center
+  justify-content: center
+  background-color: rgba(black, 0.5)
+
+div.chop-panel
+  border-radius: 4px
+  overflow: hidden
+  box-shadow: 0 8px 48px rgba(black, 0.8), 0 0 0 1px rgba(white, 0.08)
+
 component
   display: flex
   flex-direction: column
