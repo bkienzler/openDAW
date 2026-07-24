@@ -410,29 +410,80 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             const isLive = owner.getValue()
             liveButton.classList.toggle("active", isLive)
             chopTerminator.terminate()
-            if (!isLive) {return}
+            if (!isLive) {
+                currentSample.getValue().ifSome(({uuid}) => {
+                    streamTerminator.terminate()
+                    syncTerminator.terminate()
+                    playheadPos.setValue(-1.0)
+                    const matchingPads = adapter.samples.adapters()
+                        .filter(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
+                    for (const pad of matchingPads) {
+                        let numFrames = 0
+                        pad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))
+                        syncTerminator.own(Terminable.many(
+                            pad.namedParameter.sampleStart.subscribe(() => syncPadMarkers()),
+                            pad.namedParameter.sampleEnd.subscribe(() => syncPadMarkers())
+                        ))
+                        streamTerminator.own(
+                            service.project.liveStreamReceiver.subscribeFloats(pad.address, array => {
+                                if (numFrames <= 0) {pad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))}
+                                if (array.length === 0 || array[0] === -1) {playheadPos.setValue(-1.0); return}
+                                playheadPos.setValue(array[0] / numFrames)
+                            })
+                        )
+                    }
+                })
+                return
+            }
             currentSample.getValue().ifSome(({uuid, name, endInSeconds}) => {
-                const hasPad = adapter.samples.adapters()
-                    .some(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
-                if (!hasPad) {
+                syncTerminator.terminate()
+                const livePadIndex = octave.getValue() * 12
+                const updateLivePad = (): void => {
                     editing.modify(() => {
                         const audioFileBox = project.boxGraph.findBox<AudioFileBox>(uuid)
                             .unwrapOrElse(() => AudioFileBox.create(project.boxGraph, uuid, box => {
                                 box.fileName.setValue(name)
                                 box.endInSeconds.setValue(endInSeconds)
                             }))
-                        PlayfieldSampleBox.create(project.boxGraph, UUID.generate(), box => {
-                            box.file.refer(audioFileBox)
-                            box.device.refer(adapter.box.samples)
-                            box.index.setValue(octave.getValue() * 12)
-                            box.sampleStart.setValue(0.0)
-                            box.sampleEnd.setValue(1.0)
+                        const existingOpt = adapter.samples.getAdapterByIndex(livePadIndex)
+                        existingOpt.ifSome(existing => {
+                            existing.box.file.refer(audioFileBox)
+                            existing.box.sampleStart.setValue(trimStart.getValue())
+                            existing.box.sampleEnd.setValue(trimEnd.getValue())
                         })
+                        if (existingOpt.isEmpty()) {
+                            PlayfieldSampleBox.create(project.boxGraph, UUID.generate(), box => {
+                                box.file.refer(audioFileBox)
+                                box.device.refer(adapter.box.samples)
+                                box.index.setValue(livePadIndex)
+                                box.sampleStart.setValue(trimStart.getValue())
+                                box.sampleEnd.setValue(trimEnd.getValue())
+                            })
+                        }
                     })
                 }
-                syncAndSubscribe(uuid)
-                chopTerminator.own(
+                updateLivePad()
+                streamTerminator.terminate()
+                playheadPos.setValue(-1.0)
+                adapter.samples.getAdapterByIndex(livePadIndex).ifSome(livePad => {
+                    let numFrames = 0
+                    livePad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))
+                    streamTerminator.own(
+                        service.project.liveStreamReceiver.subscribeFloats(livePad.address, array => {
+                            if (numFrames <= 0) {livePad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))}
+                            if (array.length === 0 || array[0] === -1) {playheadPos.setValue(-1.0); return}
+                            playheadPos.setValue(array[0] / numFrames)
+                        })
+                    )
+                })
+                chopTerminator.ownAll(
+                    trimStart.subscribe(updateLivePad),
+                    trimEnd.subscribe(updateLivePad),
                     Events.subscribe(window, "keydown", (event: KeyboardEvent) => {
+                        if (event.code === "Escape") {
+                            playNoteLifetime.terminate()
+                            return
+                        }
                         if (event.repeat || event.code !== "Space") {return}
                         event.preventDefault()
                         event.stopPropagation()
@@ -441,14 +492,12 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                             markers.setValue([...markers.getValue(), {end: ph, start: ph}])
                             return
                         }
-                        const allPads = adapter.samples.adapters()
-                            .filter(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
-                        Option.wrap(allPads[0]).ifSome(firstPad => {
+                        adapter.samples.getAdapterByIndex(livePadIndex).ifSome(livePad => {
                             playNoteLifetime.terminate()
                             playNoteLifetime = NoteLifeCycle.start(
                                 signal => engine.noteSignal(signal),
                                 adapter.audioUnitBoxAdapter().uuid,
-                                firstPad.indexField.getValue()
+                                livePad.indexField.getValue()
                             )
                         })
                     }, {capture: true})
