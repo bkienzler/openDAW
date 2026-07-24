@@ -1,6 +1,6 @@
 import css from "./ChopEditor.sass?inline"
 import {Dragging, Events, Html} from "@opendaw/lib-dom"
-import {clamp, DefaultObservableValue, int, Lifecycle, Option, Terminable, UUID} from "@opendaw/lib-std"
+import {clamp, DefaultObservableValue, int, Lifecycle, Option, Terminable, Terminator, UUID} from "@opendaw/lib-std"
 import {createElement} from "@opendaw/lib-jsx"
 import {StudioService} from "@/service/StudioService"
 import {PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
@@ -33,10 +33,14 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
     const {editing} = project
     const viewStart = new DefaultObservableValue(0.0)
     const viewEnd = new DefaultObservableValue(1.0)
+    const liveMode = new DefaultObservableValue(false)
+    const playheadPos = new DefaultObservableValue(-1.0)
+    const liveModeTerminator = new Terminator()
     const canvas: HTMLCanvasElement = <canvas/>
     const fileLabel: HTMLElement = <div className="file-label">Drop sample here or click Browse</div>
     const applyButton: HTMLButtonElement = <button className="apply-btn" disabled>Apply to Pads</button>
     const browseButton: HTMLButtonElement = <button className="browse-btn">Browse…</button>
+    const liveButton: HTMLButtonElement = <button className="live-btn">Live</button>
     const toSamplePos = (canvasX: number): number => {
         const {left, width} = canvas.getBoundingClientRect()
         return viewStart.getValue() + clamp((canvasX - left) / width, 0.0, 1.0) * (viewEnd.getValue() - viewStart.getValue())
@@ -91,6 +95,14 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                     const mx = toPx(markerPos)
                     if (mx >= 0 && mx <= wd) {context.fillRect(Math.round(mx), 0, 1, hd)}
                 }
+                const ph = playheadPos.getValue()
+                if (ph >= 0) {
+                    const phx = toPx(ph)
+                    if (phx >= 0 && phx <= wd) {
+                        context.fillStyle = "#00ffcc"
+                        context.fillRect(Math.round(phx), 0, 2, hd)
+                    }
+                }
             })
         })
     }
@@ -99,6 +111,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         isAttached: (): boolean => adapter.box.isAttached(),
         hasSample: (): boolean => currentSample.getValue().nonEmpty(),
         replace: (replacement: Option<AudioFileBox>): void => {
+            liveMode.setValue(false)
             currentSample.setValue(replacement.map(box => ({
                 uuid: box.address.uuid,
                 name: box.fileName.getValue(),
@@ -238,7 +251,44 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         markers.subscribe(waveformPainter.requestUpdate),
         viewStart.subscribe(waveformPainter.requestUpdate),
         viewEnd.subscribe(waveformPainter.requestUpdate),
+        playheadPos.subscribe(waveformPainter.requestUpdate),
         Events.subscribe(applyButton, "click", applyToPads),
+        Events.subscribe(liveButton, "click", () => liveMode.setValue(!liveMode.getValue())),
+        liveMode.catchupAndSubscribe(owner => {
+            const isLive = owner.getValue()
+            liveButton.classList.toggle("active", isLive)
+            liveModeTerminator.terminate()
+            playheadPos.setValue(-1.0)
+            if (!isLive) {return}
+            currentSample.getValue().ifSome(({uuid}) => {
+                for (const sampleAdapter of adapter.samples.adapters()) {
+                    sampleAdapter.file().ifSome(file => {
+                        if (!UUID.equals(file.box.address.uuid, uuid)) {return}
+                        let numFrames = 0
+                        file.data.ifSome(data => {numFrames = data.numberOfFrames})
+                        liveModeTerminator.own(
+                            service.project.liveStreamReceiver.subscribeFloats(sampleAdapter.address, array => {
+                                if (numFrames <= 0) {file.data.ifSome(data => {numFrames = data.numberOfFrames})}
+                                if (array.length === 0 || array[0] === -1) {
+                                    playheadPos.setValue(-1.0)
+                                    return
+                                }
+                                playheadPos.setValue(array[0] / numFrames)
+                            })
+                        )
+                    })
+                }
+                liveModeTerminator.own(
+                    Events.subscribe(window, "keydown", (event: KeyboardEvent) => {
+                        if (event.repeat || event.code !== "Space") {return}
+                        event.preventDefault()
+                        const ph = playheadPos.getValue()
+                        if (ph < 0) {return}
+                        markers.setValue([...markers.getValue(), ph])
+                    })
+                )
+            })
+        }),
         Events.subscribe(canvas, "wheel", (event: WheelEvent) => {
             event.preventDefault()
             const {left, width} = canvas.getBoundingClientRect()
@@ -285,7 +335,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 }
             })
         }),
-        {terminate: (): void => {loaderSubscription.terminate()}}
+        {terminate: (): void => {loaderSubscription.terminate(); liveModeTerminator.terminate()}}
     )
     return (
         <div className={className}>
@@ -295,6 +345,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             <div className="toolbar">
                 {fileLabel}
                 {browseButton}
+                {liveButton}
                 {applyButton}
             </div>
         </div>
