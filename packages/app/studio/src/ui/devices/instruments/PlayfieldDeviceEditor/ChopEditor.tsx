@@ -3,10 +3,11 @@ import {Dragging, Events, Html} from "@opendaw/lib-dom"
 import {clamp, DefaultObservableValue, int, Lifecycle, Option, Terminable, Terminator, UUID} from "@opendaw/lib-std"
 import {createElement} from "@opendaw/lib-jsx"
 import {StudioService} from "@/service/StudioService"
-import {PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
+import {NoteLifeCycle, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
 import {AudioFileBox, PlayfieldSampleBox} from "@opendaw/studio-boxes"
 import {CanvasPainter} from "@opendaw/studio-core"
 import {PeaksPainter} from "@opendaw/lib-fusion"
+import {MidiKeys} from "@opendaw/lib-dsp"
 import {SampleSelector} from "@/ui/devices/SampleSelector"
 
 const className = Html.adoptStyleSheet(css, "ChopEditor")
@@ -31,13 +32,17 @@ type Construct = {
 
 export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, trimStart, trimEnd, markers, onClose}: Construct) => {
     const {project} = service
-    const {editing} = project
+    const {editing, engine} = project
     const viewStart = new DefaultObservableValue(0.0)
     const viewEnd = new DefaultObservableValue(1.0)
     const liveMode = new DefaultObservableValue(false)
     const playheadPos = new DefaultObservableValue(-1.0)
     const streamTerminator = new Terminator()
     const chopTerminator = new Terminator()
+    const syncTerminator = new Terminator()
+    type PadSlice = {padIndex: int, start: number, end: number}
+    const padSlices = new DefaultObservableValue<ReadonlyArray<PadSlice>>([])
+    let playNoteLifetime: Terminable = Terminable.Empty
     const canvas: HTMLCanvasElement = <canvas/>
     const fileLabel: HTMLElement = <div className="file-label">Drop sample here or click Browse</div>
     const applyButton: HTMLButtonElement = <button className="apply-btn" disabled>Apply to Pads</button>
@@ -97,6 +102,16 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 for (const markerPos of markers.getValue()) {
                     const mx = toPx(markerPos)
                     if (mx >= 0 && mx <= wd) {context.fillRect(Math.round(mx), 0, 1, hd)}
+                }
+                const dpr = devicePixelRatio
+                context.font = `${Math.round(9 * dpr)}px sans-serif`
+                context.textBaseline = "top"
+                for (const {padIndex, start} of padSlices.getValue()) {
+                    const lx = toPx(start)
+                    if (lx + 2 >= 0 && lx < wd) {
+                        context.fillStyle = "rgba(255,255,255,0.35)"
+                        context.fillText(MidiKeys.toFullString(padIndex), lx + 3 * dpr, 2 * dpr)
+                    }
                 }
                 const ph = playheadPos.getValue()
                 if (ph >= 0) {
@@ -194,25 +209,45 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             approve: (): void => {}
         }
     }
-    const subscribeToSampleStream = (uuid: UUID.Bytes): void => {
+    const syncPadMarkers = (): void => {
+        currentSample.getValue().ifSome(({uuid}) => {
+            const matchingPads = adapter.samples.adapters()
+                .filter(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
+                .slice()
+                .sort((padA, padB) => padA.namedParameter.sampleStart.getValue() - padB.namedParameter.sampleStart.getValue())
+            if (matchingPads.length === 0) {padSlices.setValue([]); return}
+            const newSlices = matchingPads.map(pad => ({
+                padIndex: pad.indexField.getValue(),
+                start: pad.namedParameter.sampleStart.getValue(),
+                end: pad.namedParameter.sampleEnd.getValue()
+            }))
+            padSlices.setValue(newSlices)
+            trimStart.setValue(newSlices[0].start)
+            trimEnd.setValue(newSlices[newSlices.length - 1].end)
+            markers.setValue(newSlices.length > 1 ? newSlices.slice(0, -1).map(slice => slice.end) : [])
+        })
+    }
+    const syncAndSubscribe = (uuid: UUID.Bytes): void => {
         streamTerminator.terminate()
+        syncTerminator.terminate()
         playheadPos.setValue(-1.0)
-        for (const sampleAdapter of adapter.samples.adapters()) {
-            sampleAdapter.file().ifSome(file => {
-                if (!UUID.equals(file.box.address.uuid, uuid)) {return}
-                let numFrames = 0
-                file.data.ifSome(data => {numFrames = data.numberOfFrames})
-                streamTerminator.own(
-                    service.project.liveStreamReceiver.subscribeFloats(sampleAdapter.address, array => {
-                        if (numFrames <= 0) {file.data.ifSome(data => {numFrames = data.numberOfFrames})}
-                        if (array.length === 0 || array[0] === -1) {
-                            playheadPos.setValue(-1.0)
-                            return
-                        }
-                        playheadPos.setValue(array[0] / numFrames)
-                    })
-                )
-            })
+        syncPadMarkers()
+        const matchingPads = adapter.samples.adapters()
+            .filter(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
+        for (const pad of matchingPads) {
+            let numFrames = 0
+            pad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))
+            syncTerminator.own(Terminable.many(
+                pad.namedParameter.sampleStart.subscribe(() => syncPadMarkers()),
+                pad.namedParameter.sampleEnd.subscribe(() => syncPadMarkers())
+            ))
+            streamTerminator.own(
+                service.project.liveStreamReceiver.subscribeFloats(pad.address, array => {
+                    if (numFrames <= 0) {pad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))}
+                    if (array.length === 0 || array[0] === -1) {playheadPos.setValue(-1.0); return}
+                    playheadPos.setValue(array[0] / numFrames)
+                })
+            )
         }
     }
     const applyToPads = (): void => {
@@ -249,7 +284,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                     }
                 }
             })
-            subscribeToSampleStream(uuid)
+            syncAndSubscribe(uuid)
             applyButton.textContent = "Applied!"
             setTimeout(() => {applyButton.textContent = "Apply to Pads"}, 2000)
         })
@@ -270,11 +305,13 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                     if (state.type === "loaded") {waveformPainter.requestUpdate()}
                 })
                 if (loader.peaks.nonEmpty()) {requestAnimationFrame(() => waveformPainter.requestUpdate())}
-                subscribeToSampleStream(uuid)
+                syncAndSubscribe(uuid)
             })
             if (sample.isEmpty()) {
                 fileLabel.textContent = "Drop sample here or click Browse"
                 streamTerminator.terminate()
+                syncTerminator.terminate()
+                padSlices.setValue([])
             }
         }),
         trimStart.subscribe(waveformPainter.requestUpdate),
@@ -283,6 +320,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         viewStart.subscribe(waveformPainter.requestUpdate),
         viewEnd.subscribe(waveformPainter.requestUpdate),
         playheadPos.subscribe(waveformPainter.requestUpdate),
+        padSlices.subscribe(waveformPainter.requestUpdate),
         Events.subscribe(applyButton, "click", applyToPads),
         Events.subscribe(liveButton, "click", () => liveMode.setValue(!liveMode.getValue())),
         Events.subscribe(closeButton, "click", onClose),
@@ -291,16 +329,46 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             liveButton.classList.toggle("active", isLive)
             chopTerminator.terminate()
             if (!isLive) {return}
-            currentSample.getValue().ifSome(({uuid}) => {
-                subscribeToSampleStream(uuid)
+            currentSample.getValue().ifSome(({uuid, name, endInSeconds}) => {
+                const hasPad = adapter.samples.adapters()
+                    .some(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
+                if (!hasPad) {
+                    editing.modify(() => {
+                        const audioFileBox = project.boxGraph.findBox<AudioFileBox>(uuid)
+                            .unwrapOrElse(() => AudioFileBox.create(project.boxGraph, uuid, box => {
+                                box.fileName.setValue(name)
+                                box.endInSeconds.setValue(endInSeconds)
+                            }))
+                        PlayfieldSampleBox.create(project.boxGraph, UUID.generate(), box => {
+                            box.file.refer(audioFileBox)
+                            box.device.refer(adapter.box.samples)
+                            box.index.setValue(octave.getValue() * 12)
+                            box.sampleStart.setValue(0.0)
+                            box.sampleEnd.setValue(1.0)
+                        })
+                    })
+                }
+                syncAndSubscribe(uuid)
                 chopTerminator.own(
                     Events.subscribe(window, "keydown", (event: KeyboardEvent) => {
                         if (event.repeat || event.code !== "Space") {return}
                         event.preventDefault()
                         event.stopPropagation()
                         const ph = playheadPos.getValue()
-                        if (ph < 0) {return}
-                        markers.setValue([...markers.getValue(), ph])
+                        if (ph >= 0) {
+                            markers.setValue([...markers.getValue(), ph])
+                            return
+                        }
+                        const allPads = adapter.samples.adapters()
+                            .filter(pad => pad.file().mapOr(f => UUID.equals(f.box.address.uuid, uuid), false))
+                        Option.wrap(allPads[0]).ifSome(firstPad => {
+                            playNoteLifetime.terminate()
+                            playNoteLifetime = NoteLifeCycle.start(
+                                signal => engine.noteSignal(signal),
+                                adapter.audioUnitBoxAdapter().uuid,
+                                firstPad.indexField.getValue()
+                            )
+                        })
                     }, {capture: true})
                 )
             })
@@ -351,7 +419,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 }
             })
         }),
-        {terminate: (): void => {loaderSubscription.terminate(); streamTerminator.terminate(); chopTerminator.terminate()}}
+        {terminate: (): void => {loaderSubscription.terminate(); streamTerminator.terminate(); chopTerminator.terminate(); syncTerminator.terminate(); playNoteLifetime.terminate()}}
     )
     return (
         <div className={className}>
