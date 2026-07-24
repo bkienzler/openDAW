@@ -15,7 +15,11 @@ const className = Html.adoptStyleSheet(css, "ChopEditor")
 const HIT_PX = 8
 const MIN_VIEW_RANGE = 0.001
 const ZOOM_FACTOR = 0.8
+const SNAP_PX = 12
+const FLAG_H_PX = 12
+const FLAG_W_PX = 8
 
+export type ChopBoundary = {end: number, start: number}
 export type LoadedSample = {uuid: UUID.Bytes, name: string, endInSeconds: number}
 
 type Construct = {
@@ -26,7 +30,7 @@ type Construct = {
     currentSample: DefaultObservableValue<Option<LoadedSample>>
     trimStart: DefaultObservableValue<number>
     trimEnd: DefaultObservableValue<number>
-    markers: DefaultObservableValue<ReadonlyArray<number>>
+    markers: DefaultObservableValue<ReadonlyArray<ChopBoundary>>
     onClose: () => void
 }
 
@@ -98,12 +102,37 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 const x1 = toPx(s1)
                 if (x0 >= 0 && x0 <= wd) {context.fillRect(Math.round(x0), 0, 2, hd)}
                 if (x1 >= 0 && x1 <= wd) {context.fillRect(Math.round(x1) - 1, 0, 2, hd)}
-                context.fillStyle = "#ffcc00"
-                for (const markerPos of markers.getValue()) {
-                    const mx = toPx(markerPos)
-                    if (mx >= 0 && mx <= wd) {context.fillRect(Math.round(mx), 0, 1, hd)}
-                }
                 const dpr = devicePixelRatio
+                const fw = FLAG_W_PX * dpr
+                const fh = FLAG_H_PX * dpr
+                for (const {end, start} of markers.getValue()) {
+                    const xe = Math.round(toPx(end))
+                    const xs = Math.round(toPx(start))
+                    const isLinked = Math.abs(xs - xe) < SNAP_PX * dpr
+                    context.fillStyle = "#ffcc00"
+                    if (!isLinked && xs > xe && xe < wd && xs > 0) {
+                        context.fillStyle = "rgba(255,200,0,0.08)"
+                        context.fillRect(xe + 1, 0, xs - xe - 1, hd)
+                        context.fillStyle = "#ffcc00"
+                    }
+                    if (xe >= -fw && xe <= wd + fw) {
+                        context.fillRect(xe, 0, 1, hd)
+                        context.beginPath()
+                        context.moveTo(xe, 0); context.lineTo(xe - fw, 0); context.lineTo(xe, fh)
+                        context.closePath(); context.fill()
+                        if (isLinked) {
+                            context.beginPath()
+                            context.moveTo(xe, 0); context.lineTo(xe + fw, 0); context.lineTo(xe, fh)
+                            context.closePath(); context.fill()
+                        }
+                    }
+                    if (!isLinked && xs >= -fw && xs <= wd + fw) {
+                        context.fillRect(xs, 0, 1, hd)
+                        context.beginPath()
+                        context.moveTo(xs, 0); context.lineTo(xs + fw, 0); context.lineTo(xs, fh)
+                        context.closePath(); context.fill()
+                    }
+                }
                 context.font = `${Math.round(9 * dpr)}px sans-serif`
                 context.textBaseline = "top"
                 for (const {padIndex, start} of padSlices.getValue()) {
@@ -154,19 +183,33 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         if (distR <= HIT_PX) {return Option.wrap({dir: "end", offset: dr})}
         return Option.None
     }
-    const nearestMarkerIndex = (clientX: number): number => {
-        const {width} = canvas.getBoundingClientRect()
+    type BoundaryHit = {index: int, part: "main" | "end" | "start"}
+    const findBoundaryHit = (clientX: number, clientY: number): Option<BoundaryHit> => {
+        const {top, width} = canvas.getBoundingClientRect()
         const viewRange = viewEnd.getValue() - viewStart.getValue()
-        const threshold = HIT_PX / width
         const pos = toSamplePos(clientX)
+        const threshold = HIT_PX / width * viewRange
+        const snapThreshold = SNAP_PX / width * viewRange
+        const inFlagZone = (clientY - top) < FLAG_H_PX
         const currentMarkers = markers.getValue()
         let bestIndex = -1
-        let bestDist = threshold * viewRange
+        let bestDist = threshold
+        let bestPart: "main" | "end" | "start" = "main"
         for (let i = 0; i < currentMarkers.length; i++) {
-            const dist = Math.abs(currentMarkers[i] - pos)
-            if (dist < bestDist) {bestDist = dist; bestIndex = i}
+            const {end, start} = currentMarkers[i]
+            const isLinked = Math.abs(start - end) < snapThreshold
+            const distE = Math.abs(end - pos)
+            const distS = Math.abs(start - pos)
+            if (inFlagZone && !isLinked) {
+                if (distE < bestDist) {bestDist = distE; bestIndex = i; bestPart = "end"}
+                if (distS < bestDist) {bestDist = distS; bestIndex = i; bestPart = "start"}
+            } else {
+                const dist = Math.min(distE, distS)
+                if (dist < bestDist) {bestDist = dist; bestIndex = i; bestPart = "main"}
+            }
         }
-        return bestIndex
+        if (bestIndex === -1) {return Option.None}
+        return Option.wrap({index: bestIndex, part: bestPart})
     }
     const makeTrimDrag = (dir: "start" | "end", offset: number): Dragging.Process => ({
         update: (dragEvent: Dragging.Event): void => {
@@ -179,26 +222,40 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         cancel: (): void => {},
         approve: (): void => {}
     })
-    const makeMarkerDrag = (markerIdx: int): Dragging.Process => ({
+    const makeBoundaryDrag = (index: int, part: "main" | "end" | "start"): Dragging.Process => ({
         update: (dragEvent: Dragging.Event): void => {
             const pos = clamp(toSamplePos(dragEvent.clientX), 0.0, 1.0)
-            const arr = [...markers.getValue()]
-            arr[markerIdx] = pos
+            const arr = markers.getValue().map(b => ({...b}))
+            const b = arr[index]
+            if (part === "main") {
+                b.end = pos
+                b.start = pos
+            } else if (part === "end") {
+                b.end = pos
+                const {width} = canvas.getBoundingClientRect()
+                const snapThreshold = SNAP_PX / width * (viewEnd.getValue() - viewStart.getValue())
+                if (Math.abs(b.end - b.start) < snapThreshold) {b.end = b.start}
+            } else {
+                b.start = pos
+                const {width} = canvas.getBoundingClientRect()
+                const snapThreshold = SNAP_PX / width * (viewEnd.getValue() - viewStart.getValue())
+                if (Math.abs(b.end - b.start) < snapThreshold) {b.start = b.end}
+            }
             markers.setValue(arr)
         },
         cancel: (): void => {},
         approve: (): void => {}
     })
-    const makeNewMarkerDrag = (clickX: number): Dragging.Process => {
+    const makeNewBoundaryDrag = (clickX: number): Dragging.Process => {
         const newPos = clamp(toSamplePos(clickX), 0.0, 1.0)
-        const withNew = [...markers.getValue(), newPos]
+        const withNew = [...markers.getValue(), {end: newPos, start: newPos}]
         const newIdx = withNew.length - 1
         markers.setValue(withNew)
         return {
             update: (dragEvent: Dragging.Event): void => {
                 const pos = clamp(toSamplePos(dragEvent.clientX), 0.0, 1.0)
-                const arr = [...markers.getValue()]
-                arr[newIdx] = pos
+                const arr = markers.getValue().map(b => ({...b}))
+                arr[newIdx] = {end: pos, start: pos}
                 markers.setValue(arr)
             },
             cancel: (): void => {
@@ -224,7 +281,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             padSlices.setValue(newSlices)
             trimStart.setValue(newSlices[0].start)
             trimEnd.setValue(newSlices[newSlices.length - 1].end)
-            markers.setValue(newSlices.length > 1 ? newSlices.slice(0, -1).map(slice => slice.end) : [])
+            markers.setValue(newSlices.length > 1 ? newSlices.slice(0, -1).map((slice, i) => ({end: slice.end, start: newSlices[i + 1].start})) : [])
         })
     }
     const syncAndSubscribe = (uuid: UUID.Bytes): void => {
@@ -254,19 +311,21 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         currentSample.getValue().ifSome(({uuid, name, endInSeconds}) => {
             const s0 = trimStart.getValue()
             const s1 = trimEnd.getValue()
-            const sorted = [...markers.getValue()].sort((posA, posB) => posA - posB).filter(pos => pos > s0 && pos < s1)
-            const boundaries = [s0, ...sorted, s1]
+            const sortedBoundaries = [...markers.getValue()].sort((a, b) => a.end - b.end).filter(b => b.end > s0 && b.start < s1)
+            const sliceSegments: Array<{sliceStart: number, sliceEnd: number}> = []
+            let cursor = s0
+            for (const b of sortedBoundaries) {sliceSegments.push({sliceStart: cursor, sliceEnd: b.end}); cursor = b.start}
+            sliceSegments.push({sliceStart: cursor, sliceEnd: s1})
             editing.modify(() => {
                 const audioFileBox = project.boxGraph.findBox<AudioFileBox>(uuid)
                     .unwrapOrElse(() => AudioFileBox.create(project.boxGraph, uuid, box => {
                         box.fileName.setValue(name)
                         box.endInSeconds.setValue(endInSeconds)
                     }))
-                for (let sliceIndex = 0; sliceIndex < boundaries.length - 1; sliceIndex++) {
+                for (let sliceIndex = 0; sliceIndex < sliceSegments.length; sliceIndex++) {
                     const padIndex = octave.getValue() * 12 + sliceIndex
                     if (padIndex > 127) {break}
-                    const sliceStart = boundaries[sliceIndex]
-                    const sliceEnd = boundaries[sliceIndex + 1]
+                    const {sliceStart, sliceEnd} = sliceSegments[sliceIndex]
                     const existingOpt = adapter.samples.getAdapterByIndex(padIndex)
                     existingOpt.ifSome(existing => {
                         existing.box.file.refer(audioFileBox)
@@ -356,7 +415,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                         event.stopPropagation()
                         const ph = playheadPos.getValue()
                         if (ph >= 0) {
-                            markers.setValue([...markers.getValue(), ph])
+                            markers.setValue([...markers.getValue(), {end: ph, start: ph}])
                             return
                         }
                         const allPads = adapter.samples.adapters()
@@ -402,21 +461,19 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         }),
         Events.subscribe(canvas, "contextmenu", (event: MouseEvent) => {
             event.preventDefault()
-            const markerIdx = nearestMarkerIndex(event.clientX)
-            if (markerIdx !== -1) {
+            findBoundaryHit(event.clientX, event.clientY).ifSome(({index}) => {
                 const remaining = [...markers.getValue()]
-                remaining.splice(markerIdx, 1)
+                remaining.splice(index, 1)
                 markers.setValue(remaining)
-            }
+            })
         }),
         Dragging.attach(canvas, (pointerEvent: PointerEvent) => {
             return nearestTrimHandle(pointerEvent.clientX).match({
                 some: ({dir, offset}) => Option.wrap(makeTrimDrag(dir, offset)),
-                none: () => {
-                    const markerIdx = nearestMarkerIndex(pointerEvent.clientX)
-                    if (markerIdx !== -1) {return Option.wrap(makeMarkerDrag(markerIdx))}
-                    return Option.wrap(makeNewMarkerDrag(pointerEvent.clientX))
-                }
+                none: () => findBoundaryHit(pointerEvent.clientX, pointerEvent.clientY).match({
+                    some: ({index, part}) => Option.wrap(makeBoundaryDrag(index, part)),
+                    none: () => Option.wrap(makeNewBoundaryDrag(pointerEvent.clientX))
+                })
             })
         }),
         {terminate: (): void => {loaderSubscription.terminate(); streamTerminator.terminate(); chopTerminator.terminate(); syncTerminator.terminate(); playNoteLifetime.terminate()}}

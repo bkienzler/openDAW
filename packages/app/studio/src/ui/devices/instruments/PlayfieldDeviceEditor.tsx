@@ -8,7 +8,7 @@ import {DevicePeakMeter} from "@/ui/devices/panel/DevicePeakMeter.tsx"
 import {DeviceHost, InstrumentFactories, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
 import {MenuItem} from "@opendaw/studio-core"
 import {SlotGrid} from "@/ui/devices/instruments/PlayfieldDeviceEditor/SlotGrid"
-import {ChopEditor, LoadedSample} from "@/ui/devices/instruments/PlayfieldDeviceEditor/ChopEditor"
+import {ChopBoundary, ChopEditor, LoadedSample} from "@/ui/devices/instruments/PlayfieldDeviceEditor/ChopEditor"
 import {StudioService} from "@/service/StudioService"
 
 type Construct = {
@@ -27,7 +27,7 @@ export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}:
     const currentSample = new DefaultObservableValue<Option<LoadedSample>>(Option.None)
     const chopTrimStart = new DefaultObservableValue(0.0)
     const chopTrimEnd = new DefaultObservableValue(1.0)
-    const chopMarkers = new DefaultObservableValue<ReadonlyArray<number>>([])
+    const chopMarkers = new DefaultObservableValue<ReadonlyArray<ChopBoundary>>([])
     const viewLifecycle = lifecycle.own(new Terminator())
     const controlsView: HTMLElement = <div/>
     const chopToggle: HTMLButtonElement = <button className="chop-toggle"/>
