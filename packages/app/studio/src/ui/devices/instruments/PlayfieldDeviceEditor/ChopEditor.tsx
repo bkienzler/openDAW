@@ -1,6 +1,6 @@
 import css from "./ChopEditor.sass?inline"
 import {Dragging, Events, Html} from "@opendaw/lib-dom"
-import {clamp, DefaultObservableValue, int, Lifecycle, Option, Terminable, Terminator, UUID} from "@opendaw/lib-std"
+import {clamp, DefaultObservableValue, int, isDefined, Lifecycle, Option, Terminable, Terminator, UUID} from "@opendaw/lib-std"
 import {createElement} from "@opendaw/lib-jsx"
 import {StudioService} from "@/service/StudioService"
 import {NoteLifeCycle, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
@@ -185,7 +185,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
     }
     type BoundaryHit = {index: int, part: "main" | "end" | "start"}
     const findBoundaryHit = (clientX: number, clientY: number): Option<BoundaryHit> => {
-        const {top, width} = canvas.getBoundingClientRect()
+        const {left, top, width} = canvas.getBoundingClientRect()
         const viewRange = viewEnd.getValue() - viewStart.getValue()
         const pos = toSamplePos(clientX)
         const threshold = HIT_PX / width * viewRange
@@ -200,9 +200,18 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
             const isLinked = Math.abs(start - end) < snapThreshold
             const distE = Math.abs(end - pos)
             const distS = Math.abs(start - pos)
-            if (inFlagZone && !isLinked) {
-                if (distE < bestDist) {bestDist = distE; bestIndex = i; bestPart = "end"}
-                if (distS < bestDist) {bestDist = distS; bestIndex = i; bestPart = "start"}
+            if (inFlagZone) {
+                if (isLinked) {
+                    const dist = Math.min(distE, distS)
+                    if (dist < bestDist) {
+                        bestDist = dist
+                        bestIndex = i
+                        bestPart = clientX < left + toCanvasX(end, width) ? "end" : "start"
+                    }
+                } else {
+                    if (distE < bestDist) {bestDist = distE; bestIndex = i; bestPart = "end"}
+                    if (distS < bestDist) {bestDist = distS; bestIndex = i; bestPart = "start"}
+                }
             } else {
                 const dist = Math.min(distE, distS)
                 if (dist < bestDist) {bestDist = dist; bestIndex = i; bestPart = "main"}
@@ -355,7 +364,21 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
         sampleSelector.configureBrowseClick(browseButton),
         currentSample.catchupAndSubscribe(owner => {
             loaderSubscription.terminate()
-            const sample = owner.getValue()
+            let sample = owner.getValue()
+            if (sample.isEmpty()) {
+                const firstPad = adapter.samples.adapters().find(pad => pad.file().nonEmpty())
+                if (isDefined(firstPad)) {
+                    firstPad.file().ifSome(file => {
+                        const detected: LoadedSample = {
+                            uuid: file.box.address.uuid,
+                            name: file.box.fileName.getValue(),
+                            endInSeconds: file.box.endInSeconds.getValue()
+                        }
+                        currentSample.setValue(Option.wrap(detected))
+                        sample = Option.wrap(detected)
+                    })
+                }
+            }
             applyButton.disabled = sample.isEmpty()
             sample.ifSome(({uuid, name}) => {
                 fileLabel.textContent = name
