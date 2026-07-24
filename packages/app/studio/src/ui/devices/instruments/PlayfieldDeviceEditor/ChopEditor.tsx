@@ -229,7 +229,7 @@ export const ChopEditor = ({lifecycle, service, adapter, octave, currentSample, 
                 loaderSubscription = loader.subscribe(state => {
                     if (state.type === "loaded") {waveformPainter.requestUpdate()}
                 })
-                if (loader.peaks.nonEmpty()) {waveformPainter.requestUpdate()}
+                if (loader.peaks.nonEmpty()) {requestAnimationFrame(() => waveformPainter.requestUpdate())}
             })
             if (sample.isEmpty()) {fileLabel.textContent = "Drop sample here or click Browse"}
         }),
