@@ -1,0 +1,30 @@
+@use "@/colors"
+
+component
+  display: flex
+  flex-direction: column
+
+  > button.chop-toggle
+    align-self: flex-start
+    font-size: 0.5em
+    padding: 0.125em 0.625em
+    margin: 0.25em 0 0 0.375em
+    border-radius: 2px
+    border: 0.5px solid var(--color-shadow)
+    background: none
+    color: var(--color-shadow)
+    cursor: pointer
+    letter-spacing: 0.05em
+    text-transform: uppercase
+
+    &.active
+      border-color: var(--color-green)
+      color: var(--color-green)
+
+    &:hover
+      border-color: var(--color-gray)
+      color: var(--color-gray)
+
+      &.active
+        border-color: var(--color-bright)
+        color: var(--color-bright)

@@ -1,11 +1,14 @@
-import {DefaultObservableValue, Lifecycle} from "@opendaw/lib-std"
-import {createElement} from "@opendaw/lib-jsx"
+import css from "./PlayfieldDeviceEditor.sass?inline"
+import {DefaultObservableValue, Lifecycle, Terminator} from "@opendaw/lib-std"
+import {createElement, replaceChildren} from "@opendaw/lib-jsx"
+import {Events, Html} from "@opendaw/lib-dom"
 import {DeviceEditor} from "@/ui/devices/DeviceEditor.tsx"
 import {MenuItems} from "@/ui/devices/menu-items.ts"
 import {DevicePeakMeter} from "@/ui/devices/panel/DevicePeakMeter.tsx"
 import {DeviceHost, InstrumentFactories, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
 import {MenuItem} from "@opendaw/studio-core"
 import {SlotGrid} from "@/ui/devices/instruments/PlayfieldDeviceEditor/SlotGrid"
+import {ChopEditor} from "@/ui/devices/instruments/PlayfieldDeviceEditor/ChopEditor"
 import {StudioService} from "@/service/StudioService"
 
 type Construct = {
@@ -15,10 +18,27 @@ type Construct = {
     deviceHost: DeviceHost
 }
 
+const controlsWrapperClass = Html.adoptStyleSheet(css, "PlayfieldDeviceEditor")
 const octave = new DefaultObservableValue(5) // TODO Make that bound to its PlayfieldDeviceBoxAdapter
+const chopMode = new DefaultObservableValue(false) // TODO Make that bound to its PlayfieldDeviceBoxAdapter
 
 export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}: Construct) => {
     const {project} = service
+    const viewLifecycle = lifecycle.own(new Terminator())
+    const controlsView: HTMLElement = <div/>
+    const chopToggle: HTMLButtonElement = <button className="chop-toggle"/>
+    lifecycle.ownAll(
+        chopMode.catchupAndSubscribe(owner => {
+            const isChop = owner.getValue()
+            viewLifecycle.terminate()
+            chopToggle.textContent = isChop ? "Pads" : "Chop"
+            chopToggle.classList.toggle("active", isChop)
+            replaceChildren(controlsView, isChop
+                ? <ChopEditor lifecycle={viewLifecycle} service={service} adapter={adapter} octave={octave}/>
+                : <SlotGrid lifecycle={viewLifecycle} service={service} adapter={adapter} octave={octave}/>)
+        }),
+        Events.subscribe(chopToggle, "click", () => chopMode.setValue(!chopMode.getValue()))
+    )
     return (
         <DeviceEditor lifecycle={lifecycle}
                       service={service}
@@ -29,10 +49,10 @@ export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}:
                           MenuItems.forAudioUnitInput(parent, service, deviceHost)
                       }}
                       populateControls={() => (
-                          <SlotGrid lifecycle={lifecycle}
-                                    service={service}
-                                    adapter={adapter}
-                                    octave={octave}/>
+                          <div className={controlsWrapperClass}>
+                              {chopToggle}
+                              {controlsView}
+                          </div>
                       )}
                       populateMeter={() => (
                           <DevicePeakMeter lifecycle={lifecycle}
