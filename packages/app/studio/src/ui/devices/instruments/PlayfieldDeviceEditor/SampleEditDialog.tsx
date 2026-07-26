@@ -308,6 +308,8 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
         })
     }
     const syncAndSubscribe = (uuid: UUID.Bytes): void => {
+        focusPadSubscription.terminate()
+        focusPadSubscription = Terminable.Empty
         streamTerminator.terminate()
         syncTerminator.terminate()
         playheadPos.setValue(-1.0)
@@ -324,7 +326,7 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
             streamTerminator.own(
                 service.project.liveStreamReceiver.subscribeFloats(pad.address, array => {
                     if (numFrames <= 0) {pad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))}
-                    if (array.length === 0 || array[0] === -1) {playheadPos.setValue(-1.0); return}
+                    if (array.length === 0 || array[0] === -1 || numFrames <= 0) {playheadPos.setValue(-1.0); return}
                     playheadPos.setValue(array[0] / numFrames)
                 })
             )
@@ -332,6 +334,7 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
     }
     const focusPad = (semitone: int): void => {
         focusPadSubscription.terminate()
+        focusPadSubscription = Terminable.Empty
         syncTerminator.terminate()
         const padIndex = octave.getValue() * 12 + semitone
         adapter.samples.getAdapterByIndex(padIndex).ifSome(pad => {
@@ -342,6 +345,7 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
             trimEnd.setValue(e)
             viewStart.setValue(s)
             viewEnd.setValue(e)
+            subscribePlayheadFor(semitone)
             focusPadSubscription = Terminable.many(
                 trimStart.subscribe(() => {
                     editing.modify(() => {
@@ -404,22 +408,25 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
             streamTerminator.own(
                 service.project.liveStreamReceiver.subscribeFloats(pad.address, array => {
                     if (numFrames <= 0) {pad.file().ifSome(file => file.data.ifSome(d => {numFrames = d.numberOfFrames}))}
-                    if (array.length === 0 || array[0] === -1) {playheadPos.setValue(-1.0); return}
+                    if (array.length === 0 || array[0] === -1 || numFrames <= 0) {playheadPos.setValue(-1.0); return}
                     playheadPos.setValue(array[0] / numFrames)
                 })
             )
         })
     }
-    const startPlayingPad = (semitone: int): void => {
+    const startPlayingPad = (semitone: int): boolean => {
         playNoteLifetime.terminate()
         const padIndex = octave.getValue() * 12 + semitone
+        let started = false
         adapter.samples.getAdapterByIndex(padIndex).ifSome(pad => {
             playNoteLifetime = NoteLifeCycle.start(
                 signal => engine.noteSignal(signal),
                 adapter.audioUnitBoxAdapter().uuid,
                 pad.indexField.getValue()
             )
+            started = true
         })
+        return started
     }
     const finishChop = (): void => {
         playNoteLifetime.terminate()
@@ -435,7 +442,7 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
             syncTerminator.terminate()
             ensurePad(0, trimStart.getValue(), trimEnd.getValue())
             subscribePlayheadFor(0)
-            startPlayingPad(0)
+            if (!startPlayingPad(0)) {return}
             chopPhase.setValue({tag: "recording", padSemitone: 0, segmentStart: trimStart.getValue()})
             return
         }
@@ -447,11 +454,12 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
         }
         const nextSemitone = phase.padSemitone + 1
         if (semitone !== nextSemitone || nextSemitone > 11) {return}
-        const chopPos = playheadPos.getValue() >= 0 ? playheadPos.getValue() : trimEnd.getValue()
+        const rawPos = playheadPos.getValue()
+        const chopPos = (rawPos >= 0.0 && rawPos <= 1.0) ? rawPos : trimEnd.getValue()
         ensurePad(phase.padSemitone, phase.segmentStart, chopPos)
         ensurePad(nextSemitone, chopPos, trimEnd.getValue())
         subscribePlayheadFor(nextSemitone)
-        startPlayingPad(nextSemitone)
+        if (!startPlayingPad(nextSemitone)) {return}
         chopPhase.setValue({tag: "recording", padSemitone: nextSemitone, segmentStart: chopPos})
     }
     const padLabels: ReadonlyArray<HTMLSpanElement> = Arrays.create(() => <span/>, 12)
@@ -566,11 +574,27 @@ export const SampleEditDialog = ({lifecycle, service, adapter, octave, currentSa
                 playNoteLifetime.terminate()
                 return
             }
-            if (editMode.getValue() === "edit") {
-                focusedSemitone.getValue().ifSome(semitone => startPlayingPad(semitone))
-            } else {
-                startPlayingPad(0)
+            const oct = octave.getValue()
+            const uuidOpt = currentSample.getValue().map(({uuid}) => uuid)
+            const findPlayable = (): Option<int> => {
+                for (let s = 0; s < 12; s++) {
+                    const hasSample = adapter.samples.getAdapterByIndex(oct * 12 + s)
+                        .mapOr(pad => pad.file().mapOr(f => uuidOpt.mapOr(u => UUID.equals(f.box.address.uuid, u), false), false), false)
+                    if (hasSample) {return Option.wrap(s)}
+                }
+                return Option.None
             }
+            let toPlay: Option<int>
+            if (editMode.getValue() === "edit") {
+                toPlay = focusedSemitone.getValue()
+                if (toPlay.isEmpty()) {toPlay = findPlayable()}
+            } else {
+                toPlay = findPlayable()
+            }
+            toPlay.ifSome(semitone => {
+                subscribePlayheadFor(semitone)
+                startPlayingPad(semitone)
+            })
         }),
         Events.subscribe(window, "keydown", (event: KeyboardEvent) => {
             if (event.code === "Escape") {playNoteLifetime.terminate()}
