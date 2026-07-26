@@ -8,7 +8,7 @@ import {DevicePeakMeter} from "@/ui/devices/panel/DevicePeakMeter.tsx"
 import {DeviceHost, InstrumentFactories, PlayfieldDeviceBoxAdapter} from "@opendaw/studio-adapters"
 import {MenuItem} from "@opendaw/studio-core"
 import {SlotGrid} from "@/ui/devices/instruments/PlayfieldDeviceEditor/SlotGrid"
-import {ChopBoundary, ChopEditor, LoadedSample} from "@/ui/devices/instruments/PlayfieldDeviceEditor/ChopEditor"
+import {ChopBoundary, LoadedSample, SampleEditDialog} from "@/ui/devices/instruments/PlayfieldDeviceEditor/SampleEditDialog"
 import {StudioService} from "@/service/StudioService"
 
 type Construct = {
@@ -35,13 +35,13 @@ export const PlayfieldDeviceEditor = ({lifecycle, service, adapter, deviceHost}:
         chopMode.catchupAndSubscribe(owner => {
             const isChop = owner.getValue()
             viewLifecycle.terminate()
-            chopToggle.textContent = isChop ? "Pads" : "Chop"
+            chopToggle.textContent = isChop ? "Pads" : "Edit"
             chopToggle.classList.toggle("active", isChop)
             if (isChop) {
                 replaceChildren(controlsView)
                 const backdrop: HTMLElement = <div className="chop-backdrop"/>
                 const panel: HTMLElement = <div className="chop-panel">
-                    <ChopEditor
+                    <SampleEditDialog
                         lifecycle={viewLifecycle}
                         service={service}
                         adapter={adapter}

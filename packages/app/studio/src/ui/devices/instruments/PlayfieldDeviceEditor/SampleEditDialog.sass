@@ -1,0 +1,143 @@
+@use "@/colors"
+
+component
+  display: flex
+  flex-direction: column
+  row-gap: 0.25em
+  padding: 0.5em
+  width: 900px
+  background-color: var(--color-panel-background)
+
+  > div.waveform-area
+    height: 220px
+    position: relative
+    background-color: rgba(black, 0.08)
+    border-radius: 1px
+    box-shadow: 0 0.5px 1px 0 rgba(white, 0.1), 0 0.5px 1px 0 rgba(black, 0.1) inset
+    flex-shrink: 0
+
+    > canvas
+      width: 100%
+      height: 100%
+      position: absolute
+      cursor: crosshair
+
+      &.accept
+        outline: solid var(--color-green) 1px
+        background-color: rgba(white, 0.04)
+
+  > div.toolbar
+    display: flex
+    align-items: center
+    column-gap: 0.5em
+    font-size: 0.5625em
+    flex-shrink: 0
+
+    > button, > div > button
+      padding: 0.25em 0.625em
+      border-radius: 2px
+      border: 0.5px solid var(--color-shadow)
+      background: none
+      color: var(--color-shadow)
+      cursor: pointer
+      white-space: nowrap
+      letter-spacing: 0.03em
+
+      &:hover
+        color: var(--color-gray)
+        border-color: var(--color-gray)
+
+      &:disabled
+        opacity: 0.3
+        pointer-events: none
+
+      &.active
+        border-color: var(--color-green)
+        color: var(--color-green)
+
+      &.close-btn
+        font-size: 1em
+        padding: 0 0.4em
+        line-height: 1
+        opacity: 0.5
+        margin-left: auto
+
+        &:hover
+          opacity: 1
+          border-color: var(--color-bright)
+          color: var(--color-bright)
+
+    > div.file-label
+      flex: 1 0 0
+      overflow: hidden
+      white-space: nowrap
+      text-overflow: ellipsis
+      color: var(--color-shadow)
+
+    > div.mode-tabs
+      display: flex
+      column-gap: 0.25em
+
+    > div.octave-control
+      display: flex
+      align-items: center
+      column-gap: 0.25em
+
+      > span
+        color: var(--color-shadow)
+        min-width: 3.5em
+        text-align: center
+
+  > div.pad-grid
+    display: grid
+    grid-template-rows: repeat(3, 4.5em)
+    grid-template-columns: repeat(4, 1fr)
+    gap: 0.375em
+    flex-shrink: 0
+
+    > div.dialog-pad
+      border-radius: 3px
+      border: 1px solid rgba(128, 128, 128, 0.25)
+      background-color: rgba(0, 0, 0, 0.15)
+      cursor: pointer
+      display: flex
+      align-items: flex-end
+      padding: 0.3em
+      overflow: hidden
+      transition: border-color 80ms, background-color 80ms
+
+      &:hover
+        border-color: rgba(255, 255, 255, 0.2)
+        background-color: rgba(255, 255, 255, 0.05)
+
+      &.has-sample
+        border-color: var(--pad-color)
+        background-color: color-mix(in srgb, var(--pad-color) 12%, transparent)
+
+        &:hover
+          background-color: color-mix(in srgb, var(--pad-color) 20%, transparent)
+
+      &.focused
+        border-color: var(--color-bright)
+        background-color: rgba(255, 255, 255, 0.08)
+        box-shadow: 0 0 0 1px var(--color-bright) inset
+
+      &.recording
+        border-color: #00ffcc
+        background-color: rgba(0, 255, 204, 0.12)
+        box-shadow: 0 0 6px rgba(0, 255, 204, 0.3)
+
+      &.done
+        opacity: 0.5
+
+      > span
+        font-size: 0.5em
+        color: var(--color-shadow)
+        text-overflow: ellipsis
+        overflow: hidden
+        white-space: nowrap
+        width: 100%
+        pointer-events: none
+
+      &.has-sample > span
+        color: var(--pad-color)
